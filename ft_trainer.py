@@ -446,6 +446,9 @@ class FtTrainer(Trainer):
         elif not delay_optimizer_creation:
             self.create_optimizer_and_scheduler(num_training_steps=max_steps)
 
+        print('override self.deepspeed to False')
+        self.deepspeed = False
+
         self.state = TrainerState()
         self.state.is_hyper_param_search = trial is not None
 
@@ -776,7 +779,8 @@ class FtTrainer(Trainer):
         return TrainOutput(self.state.global_step, train_loss, metrics)
 
     def _maybe_log_save_evaluate(self, tr_loss, model, trial, epoch, ignore_keys_for_eval):
-        if self.control.should_log:
+        if False:
+#        if self.control.should_log:
             if is_torch_tpu_available():
                 xm.mark_step()
 

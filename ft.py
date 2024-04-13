@@ -84,13 +84,14 @@ def main():
     # send_example_telemetry("run_glue", model_args, data_args)
 
     # Enable/disable wandb logging
-    # os.environ["WANDB_DISABLED"] = f"{wandb_args.disable_wandb}"
+    os.environ["WANDB_DISABLED"] = f"{wandb_args.disable_wandb}"
 
     # Setup logging
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
-        handlers=[logging.StreamHandler(sys.stdout)],
+#        handlers=[logging.StreamHandler(sys.stdout)],
+        filename='/content/drive/MyDrive/Colab-Notebooks/cs7643-prj/llmft/logs/output.log', filemode='w'
     )
 
     log_level = training_args.get_process_log_level()
