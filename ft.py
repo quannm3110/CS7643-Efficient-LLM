@@ -91,7 +91,7 @@ def main():
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
 #        handlers=[logging.StreamHandler(sys.stdout)],
-        filename='/content/drive/MyDrive/Colab-Notebooks/cs7643-prj/llmft/logs/output.log', filemode='w'
+        filename="/content/drive/My Drive/Education/Master's (GaTech)/Courses/CS7643: Deep Learning/Project/CS7643-Efficient_LLM/logfiles/output.log", filemode='w'
     )
 
     log_level = training_args.get_process_log_level()
@@ -255,7 +255,9 @@ def main():
                 use_auth_token=True if model_args.use_auth_token else None,
                 ignore_mismatched_sizes=model_args.ignore_mismatched_sizes,
             )
-        else:
+        else: 
+            # TODO: context distillation: add an if-else statement for context distillation flag
+            # load context distillation model class if true
             model = OPTWithClassifier.from_pretrained(
                 model_args.model_name_or_path,
                 from_tf=bool(".ckpt" in model_args.model_name_or_path),
@@ -391,6 +393,8 @@ def main():
 
     def preprocess_function(examples):
         # Tokenize the texts
+
+        # TODO: Context distllation, may need to perform preprocessing with a different pattern
 
         # Apply a pattern to the inputs
         pattern_examples = [

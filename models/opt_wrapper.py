@@ -453,6 +453,12 @@ transformers.models.opt.modeling_opt.OPTDecoderLayer = OPTDecoderLayer
 
 
 class OPTWithClassifier(OPTForSequenceClassification):
+
+    # TODO: Context distillation:
+    # 0. Add another model class inheritting from this class (OPTWithClassifier)
+    # 1. clone self.model and set to another variable, freeze and use as P0
+    # 2. override with different loss (kl divergence) for P_theta model
+
     def __init__(self, config):
         super().__init__(config)
         self.soft_prompt_embeddings = None

@@ -488,6 +488,17 @@ class FtArguments:
         },
     )
 
+    # context disllation flag
+    context_distillation_flag: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Perform context disllation fine tuning, introduces KL divergence loss"
+                "Based on paper https://arxiv.org/pdf/2112.00861.pdf"
+            )
+        },
+    )
+
     def __post_init__(self):
         # Sanity checks for fine-tuning arguments
         assert not (
