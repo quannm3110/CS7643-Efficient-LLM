@@ -618,13 +618,13 @@ def main():
             for name in additional_evaluation_datasets.keys():
                 all_results[f"keep_samples_{name}"] = keep_counter[name]
 
-            # Transpose output dataframe for better readability
-            df = df.T
-
             # Add columns to record experiment settings for each row
             df['model'] = MODEL_NAME
             df['task_name]' = data_args.task_name
             df['eval_task_name'] = data_args.eval_task_name
+
+            # Transpose output dataframe for better readability
+            df = df.T
 
             if "llama" in model_args.model_name_or_path:
                 name = model_args.model_name_or_path.split("/")
