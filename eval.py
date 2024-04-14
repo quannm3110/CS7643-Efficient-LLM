@@ -618,15 +618,24 @@ def main():
             for name in additional_evaluation_datasets.keys():
                 all_results[f"keep_samples_{name}"] = keep_counter[name]
 
-            df = _create_df(all_results)
+            # Transpose output dataframe for better readability
+            df = df.T
+
+            # Add columns to record experiment settings for each row
+            df['model'] = MODEL_NAME
+            df['task_name]' = data_args.task_name
+            df['eval_task_name'] = data_args.eval_task_name
 
             if "llama" in model_args.model_name_or_path:
                 name = model_args.model_name_or_path.split("/")
                 MODEL_NAME = f"{name[-3]}-{name[-2]}-{name[-1]}"
 
-                file_name = f"{MODEL_NAME}" + \
-                    f"_{data_args.task_name}" + \
-                    f"_{data_args.eval_task_name}"
+                # file_name = f"{MODEL_NAME}" + \
+                #     f"_{data_args.task_name}" + \
+                #     f"_{data_args.eval_task_name}"
+
+                # New file for gathering ICL results - Save all ICL results to "ICL_outputs.csv"
+                file_name = "ICL_outputs"
 
             else:
                 file_name = f"{model_args.model_name_or_path.replace('/', '-')}" + \
