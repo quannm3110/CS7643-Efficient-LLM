@@ -623,9 +623,6 @@ def main():
             df['task_name]' = data_args.task_name
             df['eval_task_name'] = data_args.eval_task_name
 
-            # Transpose output dataframe for better readability
-            df = df.T
-
             if "llama" in model_args.model_name_or_path:
                 name = model_args.model_name_or_path.split("/")
                 MODEL_NAME = f"{name[-3]}-{name[-2]}-{name[-1]}"
