@@ -232,7 +232,7 @@ class DataTrainingArguments:
 
         if self.eval_on_hans:
             assert self.task_name in [
-                "rte", "mnli", "mnli-original", "stack-exchange"], "evaluation on HANS requires training on rte or mnli or stack-exchange."
+                "rte", "mnli", "mnli-original", "stack-exchange", "stack-exchange-with-context"], "evaluation on HANS requires training on rte or mnli or stack-exchange."
 
             # if self.hans_subcase is not None:
             #     assert self.hans_heuristic is not None, "specifying a subcase requires specifying a heuristic"
@@ -241,7 +241,7 @@ class DataTrainingArguments:
 
         if self.eval_on_mnli_mismatched:
             assert self.task_name in [
-                "rte", "mnli", "mnli-original", "stack-exchange"], "evaluation on mnli-mismatched requires training on rte or mnli."
+                "rte", "mnli", "mnli-original", "stack-exchange", "stack-exchange-with-context"], "evaluation on mnli-mismatched requires training on rte or mnli."
 
         if self.eval_on_paws_qqp:
             assert self.paws_qqp_file is not None, "evaluating on paws-qqp requires providing a path to the evaluation data."

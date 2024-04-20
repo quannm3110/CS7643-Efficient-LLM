@@ -127,11 +127,12 @@ class Glue(Metric):
             "wnli",
             "hans",
             "stack-exchange",
+            "stack-exchange-with-context",
         ]:
             raise KeyError(
                 "You should supply a configuration name selected in "
                 '["sst2", "mnli", "mnli_mismatched", "mnli_matched", '
-                '"cola", "stsb", "mrpc", "qqp", "qnli", "rte", "wnli", "hans", "stack-exchange"]'
+                '"cola", "stsb", "mrpc", "qqp", "qnli", "rte", "wnli", "hans", "stack-exchange", "stack-exchange-with-context"]'
             )
         return MetricInfo(
             description=_DESCRIPTION,
@@ -158,11 +159,11 @@ class Glue(Metric):
         elif self.config_name in ["qqp"]:
             # we overwrite the the default metric for qqp
             return acc_and_f1_micro_macro(predictions, references)
-        elif self.config_name in ["sst2", "mnli", "mnli_mismatched", "mnli_matched", "qnli", "rte", "wnli", "hans", "stack-exchange"]:
+        elif self.config_name in ["sst2", "mnli", "mnli_mismatched", "mnli_matched", "qnli", "rte", "wnli", "hans", "stack-exchange", "stack-exchange-with-context"]:
             return {"accuracy": simple_accuracy(predictions, references)}
         else:
             raise KeyError(
                 "You should supply a configuration name selected in "
                 '["sst2", "mnli", "mnli_mismatched", "mnli_matched", '
-                '"cola", "stsb", "mrpc", "qqp", "qnli", "rte", "wnli", "hans", "stack-exchange"]'
+                '"cola", "stsb", "mrpc", "qqp", "qnli", "rte", "wnli", "hans", "stack-exchange", "stack-exchange-with-context"]'
             )

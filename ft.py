@@ -482,7 +482,7 @@ def main():
         if "validation" not in raw_datasets and "validation_matched" not in raw_datasets:
             raise ValueError("--do_eval requires a validation dataset")
         eval_dataset = raw_datasets["validation_matched" if data_args.task_name in
-                                    ["mnli", "mnli-original", "stack-exchange"] else "validation"]
+                                    ["mnli", "mnli-original", "stack-exchange", "stack-exchange-with-context"] else "validation"]
 
         # (optional) subsample eval datasets
         if data_args.max_eval_samples is not None:
@@ -510,7 +510,7 @@ def main():
         if "test" not in raw_datasets and "test_matched" not in raw_datasets:
             raise ValueError("--do_predict requires a test dataset")
         predict_dataset = raw_datasets["test_matched" if data_args.task_name in
-                                       ["mnli", "mnli-original", "stack-exchange"] else "test"]
+                                       ["mnli", "mnli-original", "stack-exchange", "stack-exchange-with-context"] else "test"]
         if data_args.max_predict_samples is not None:
             max_predict_samples = min(
                 len(predict_dataset), data_args.max_predict_samples)

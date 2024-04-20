@@ -14,6 +14,7 @@ task_to_keys = {
     "mnli-mismatched": ("premise", "hypothesis"),
     "hans": ("premise", "hypothesis"),
     "stack-exchange": ("title", "body"),
+    "stack-exchange-with-context": ("title", "body"),
 
     # labels are: 0 (not_duplicate), 1 (duplicate)
     "qqp": ("question1", "question2"),
@@ -87,6 +88,162 @@ def save_dataset(dataset, path):
     logger.info(f"Saving dataset to: {path}")
     df.to_csv(path, columns=dataset_dict.keys())
 
+def load_mnli(data_args):
+
+    # convert to binary format (remove neutral class)
+    raw_datasets = load_dataset(
+        "glue", data_args.task_name, cache_dir=data_args.dataset_cache_dir)
+
+    raw_datasets = raw_datasets.filter(
+        lambda example: example["label"] != 1)
+
+    # change labels of contradiction examples from 2 to 1
+    def change_label(example):
+        example["label"] = 1 if example["label"] == 2 else example["label"]
+        return example
+    raw_datasets = raw_datasets.map(change_label)
+
+    # change features to reflect the new labels
+    features = raw_datasets["train"].features.copy()
+    features["label"] = ClassLabel(
+        num_classes=2, names=['entailment', 'contradiction'], id=None)
+    raw_datasets = raw_datasets.cast(
+        features)  # overwrite old features
+
+    return raw_datasets
+
+
+def load_stack_exchange(data_args):
+
+    # Consider 'unsolved' as 'contradiction' and 'solved' as 'entailment'
+    raw_datasets = load_dataset("habedi/stack-exchange-dataset", cache_dir=data_args.dataset_cache_dir)
+
+    # Change features to reflect the new labels
+    features = raw_datasets["train"].features.copy()
+    features["label"] = ClassLabel(
+        num_classes=2, names=['entailment', 'contradiction'], id=None)
+    raw_datasets = raw_datasets.cast(
+        features) # overwrite old features
+    
+    # Rename id column
+    raw_datasets = raw_datasets.rename_column("id", "idx")
+
+    # TODO Temporary using the same validation and testing sets
+    keys = ["validation", "validation_matched", "validation_mismatched", "test", "test_matched", "test_mismatched"]
+    for k in keys:
+        raw_datasets[k] = raw_datasets["train"].shuffle().select(range(1000))
+
+    return 
+
+
+def get_balanced_subsets(dataset):
+    subset_per_label = {}
+    for label_idx, _ in enumerate(dataset.features["label"].names):
+        subset_per_label[label_idx] = dataset.filter(
+            lambda s: s["label"] == label_idx)
+    return subset_per_label
+
+
+def _select_subset_by_idx(dataset, indices):
+    dataset = dataset.filter(
+        lambda s: s["idx"] in indices)
+    return dataset
+
+
+def _select_random_subset(dataset, num_shots, balanced=False, seed=123):
+    # fix seed
+    np.random.seed(seed)
+
+    if num_shots < 1:
+        return [], []
+
+    if balanced:
+        assert num_shots % 2 == 0, "a balanced context requires at least one demonstartion per label"
+        # select the same number of samples from every label
+        indices = []  # we collect all indices here
+        subset_per_label = get_balanced_subsets(dataset)
+
+        for _, samples in subset_per_label.items():
+            subset_indices = samples["idx"]
+            # select num_shots // 2 samples
+            subset_indices = np.random.choice(
+                subset_indices, size=num_shots // 2, replace=False)
+            indices += list(subset_indices)
+        assert len(indices) == num_shots
+    else:
+        # just select a random subset of samples
+        indices = np.random.choice(
+            range(len(dataset)), size=num_shots, replace=False)
+
+    # return _select_subset_by_ids(dataset, indices), indices
+    return _select_subset_by_idx(dataset, indices), indices
+
+def context_creation(
+    dataset_name,
+    dataset,
+    num_shots,
+    pattern,
+    label_to_tokens,
+    separate_shots_by=" ",
+    description="",
+    target_prefix="",
+    from_indices=None,
+    balanced=False,
+    shuffle=False,
+    seed=123
+):
+    assert pattern is not None
+    assert label_to_tokens is not None
+
+    # select samples from which the context will be constructed
+    demonstrations, indices = _select_random_subset(
+            dataset, num_shots, balanced, seed)
+
+    if shuffle:
+        if len(demonstrations) > 0:
+            demonstrations = demonstrations.shuffle(seed)
+
+    # create context
+    context = "" if description == "" else f"{description}{separate_shots_by}"
+
+    for sample in demonstrations:
+        formated_sample = pattern.format(
+            text1=sample[task_to_keys[dataset_name][0]],
+            text2=sample[task_to_keys[dataset_name][1]
+                         ] if task_to_keys[dataset_name][1] is not None else None
+        )
+        verbalized_label = label_to_tokens[sample["label"]]
+        if verbalized_label.startswith("Ġ"):
+            # we need to remove the leading whitespace from the target token in the context
+            verbalized_label = verbalized_label[1:]
+
+        elif verbalized_label.startswith("▁"):
+            # we need to remove the leading whitespace from the target token in the context
+            verbalized_label = verbalized_label[1:]
+
+        context += f"{formated_sample}{target_prefix}{verbalized_label}{separate_shots_by}"
+
+    return context, indices
+
+
+def add_context_to_dataset(dataset_name, dataset, pattern, context):
+    def _add_context(samples):
+        result = {}
+        modified_inputs = []
+        key1, key2 = task_to_keys[dataset_name]
+
+        for idx in range(len(samples[key1])):
+            modified_input = f"{context}{pattern.format(text1=samples[key1][idx], text2=samples[key2][idx])}"
+            modified_inputs.append(modified_input)
+
+        result["modified_input"] = modified_inputs
+
+        return result
+
+    dataset = dataset.map(_add_context, batched=True, batch_size=100)
+
+    return dataset
+
 
 def load_glue_datasets(data_args, model_args):
     # Get the datasets: specify a GLUE benchmark task (the dataset will be downloaded automatically from the datasets Hub).
@@ -96,25 +253,7 @@ def load_glue_datasets(data_args, model_args):
 
     if data_args.task_name is not None:
         if data_args.task_name == "mnli":
-            # convert to binary format (remove neutral class)
-            raw_datasets = load_dataset(
-                "glue", data_args.task_name, cache_dir=data_args.dataset_cache_dir)
-
-            raw_datasets = raw_datasets.filter(
-                lambda example: example["label"] != 1)
-
-            # change labels of contradiction examples from 2 to 1
-            def change_label(example):
-                example["label"] = 1 if example["label"] == 2 else example["label"]
-                return example
-            raw_datasets = raw_datasets.map(change_label)
-
-            # change features to reflect the new labels
-            features = raw_datasets["train"].features.copy()
-            features["label"] = ClassLabel(
-                num_classes=2, names=['entailment', 'contradiction'], id=None)
-            raw_datasets = raw_datasets.cast(
-                features)  # overwrite old features
+            raw_datasets = load_mnli(data_args)
         
         elif data_args.task_name == "mnli-original":
             # convert to binary format (merge neutral and contradiction class)
@@ -135,18 +274,31 @@ def load_glue_datasets(data_args, model_args):
                 features)  # overwrite old features
             
         elif data_args.task_name == "stack-exchange":
-            # Consider 'unsolved' as 'contradiction' and 'solved' as 'entailment'
-            raw_datasets = load_dataset("habedi/stack-exchange-dataset", cache_dir=data_args.dataset_cache_dir)
-
-            # Change features to reflect the new labels
-            features = raw_datasets["train"].features.copy()
-            features["label"] = ClassLabel(
-                num_classes=2, names=['entailment', 'contradiction'], id=None)
-            raw_datasets = raw_datasets.cast(
-                features) # overwrite old features
+            raw_datasets = load_stack_exchange(data_args)
+        
+        elif data_args.task_name == "stack-exchange-with-context":
             
-            # Rename id column
-            raw_datasets = raw_datasets.rename_column("id", "idx")
+            # Load stack exchange data
+            raw_datasets = load_stack_exchange(data_args)
+
+            # Load mnli
+            context_datasets = load_mnli(data_args)
+
+            # Add context
+            target_tokens = ['entailment', 'contradiction']
+            id_to_target_token ={idx: t for idx, t in enumerate(target_tokens)}
+
+            # Create in-context learning prompt from training data
+            context, contex_indices = context_creation(
+                dataset_name=data_args.task_name,
+                dataset=context_datasets["train"], 
+                num_shots=16, pattern=" premise: {text1} hypothesis: {text2}",
+                label_to_tokens=id_to_target_token,
+                separate_shots_by= " . ", description=" ",
+                target_prefix=" answer: ",
+                from_indices=None, balanced=True, shuffle=True,
+                seed=42
+            )
 
             # TODO Temporary using the same validation and testing sets
             keys = ["validation", "validation_matched", "validation_mismatched", "test", "test_matched", "test_mismatched"]
