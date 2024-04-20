@@ -272,6 +272,10 @@ def load_cola_ood_dataset(path, label=None, cache_dir=None):
 
     return dataset, subset
 
+def load_se_datasets(data_args):
+    se_dataset = load_dataset("habedi/stack-exchange-dataset", cache_dir=data_args.cache_dir)
+    return se_dataset
+
 
 def load_local_datasets(data_args, model_args, training_args):
     # For CSV/JSON files, this script will use as labels the column called 'label' and as pair of sentences the
