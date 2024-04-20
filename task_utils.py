@@ -13,6 +13,7 @@ task_to_keys = {
     "mnli-original": ("premise", "hypothesis"),
     "mnli-mismatched": ("premise", "hypothesis"),
     "hans": ("premise", "hypothesis"),
+    "stack-exchange": ("title", "body"),
 
     # labels are: 0 (not_duplicate), 1 (duplicate)
     "qqp": ("question1", "question2"),
@@ -132,6 +133,25 @@ def load_glue_datasets(data_args, model_args):
                 num_classes=2, names=['entailment', 'contradiction'], id=None)
             raw_datasets = raw_datasets.cast(
                 features)  # overwrite old features
+            
+        elif data_args.task_name == "stack-exchange":
+            # Consider 'unsolved' as 'contradiction' and 'solved' as 'entailment'
+            raw_datasets = load_dataset("habedi/stack-exchange-dataset", cache_dir=data_args.dataset_cache_dir)
+
+            # Change features to reflect the new labels
+            features = raw_datasets["train"].features.copy()
+            features["label"] = ClassLabel(
+                num_classes=2, names=['entailment', 'contradiction'], id=None)
+            raw_datasets = raw_datasets.cast(
+                features) # overwrite old features
+            
+            # Rename id column
+            raw_datasets = raw_datasets.rename_column("id", "idx")
+
+            # TODO Temporary using the same validation and testing sets
+            keys = ["validation", "validation_matched", "validation_mismatched", "test", "test_matched", "test_mismatched"]
+            for k in keys:
+                raw_datasets[k] = raw_datasets["train"].shuffle().select(range(1000))
             
         else:
             # Downloading and loading a dataset from the hub.
@@ -271,10 +291,6 @@ def load_cola_ood_dataset(path, label=None, cache_dir=None):
         subset = f"{subset}-{'acceptable' if label == 1 else 'unacceptable'}"
 
     return dataset, subset
-
-def load_se_datasets(data_args):
-    se_dataset = load_dataset("habedi/stack-exchange-dataset", cache_dir=data_args.cache_dir)
-    return se_dataset
 
 
 def load_local_datasets(data_args, model_args, training_args):
