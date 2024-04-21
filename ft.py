@@ -16,6 +16,7 @@
 """ Finetuning the library models for sequence classification on GLUE."""
 # You can also adapt this script on your own text classification task. Pointers for this are left as comments.
 
+import copy
 import logging
 import os
 import random
@@ -50,9 +51,10 @@ from utils import create_dir, get_timestamp
 from task_utils import task_to_keys, load_glue_datasets, load_hans_dataset, load_mnli_mismatched_dataset, load_paws_qqp_dataset, load_cola_ood_dataset, save_dataset
 from ft_trainer import FtTrainer
 from models.gptj_wrapper import GPTJWithClassifier, GPTJWithLMClassifier
-from models.opt_wrapper import OPTWithClassifier, OPTWithLMClassifier
+from models.opt_wrapper import OPTWithClassifier, OPTWithLMClassifier, OPTWithContextDistillationLMClassifier
 from models.llama_wrapper import LlamaWithLMClassifier
 from models.gptneox_wrapper import GPTNeoXWithLMClassifier
+from eval_utils import create_few_shot_context
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 check_min_version("4.23.1")
@@ -90,8 +92,9 @@ def main():
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
-#        handlers=[logging.StreamHandler(sys.stdout)],
+        # handlers=[logging.StreamHandler(sys.stdout)],
         filename="/content/drive/My Drive/Education/Master's (GaTech)/Courses/CS7643: Deep Learning/Project/CS7643-Efficient_LLM/logfiles/output.log", filemode='w'
+        # filename="./logfiles/output.log", filemode='w'
     )
 
     log_level = training_args.get_process_log_level()
@@ -246,18 +249,35 @@ def main():
 
     elif "facebook/opt" in model_args.model_name_or_path:
         if ft_args.target_tokens is not None:
-            model = OPTWithLMClassifier.from_pretrained(
-                model_args.model_name_or_path,
-                from_tf=bool(".ckpt" in model_args.model_name_or_path),
-                config=config,
-                cache_dir=model_args.cache_dir,
-                revision=model_args.model_revision,
-                use_auth_token=True if model_args.use_auth_token else None,
-                ignore_mismatched_sizes=model_args.ignore_mismatched_sizes,
-            )
-        else: 
-            # TODO: context distillation: add an if-else statement for context distillation flag
-            # load context distillation model class if true
+            if ft_args.context_distillation_flag:
+                model = OPTWithContextDistillationLMClassifier.from_pretrained(
+                    pretrained_model_name_or_path=model_args.model_name_or_path,
+                    from_tf=bool(".ckpt" in model_args.model_name_or_path),
+                    config=config,
+                    cache_dir=model_args.cache_dir,
+                    revision=model_args.model_revision,
+                    use_auth_token=True if model_args.use_auth_token else None,
+                    ignore_mismatched_sizes=model_args.ignore_mismatched_sizes,
+                )
+                logger.info("Completed model loading using class OPTWithContextDistillationLMClassifier")
+
+                if training_args.do_train:
+                    logger.info("Proceeding to clone pre-trained model and freeze it for usage as p_0 (context distillation)")
+                    model.p_0 = copy.deepcopy(model.model)
+                    for param in model.p_0.parameters():
+                        param.requires_grad = False
+                    logger.info("p_0 initialised and layers have been frozen")
+            else:
+                model = OPTWithLMClassifier.from_pretrained(
+                    model_args.model_name_or_path,
+                    from_tf=bool(".ckpt" in model_args.model_name_or_path),
+                    config=config,
+                    cache_dir=model_args.cache_dir,
+                    revision=model_args.model_revision,
+                    use_auth_token=True if model_args.use_auth_token else None,
+                    ignore_mismatched_sizes=model_args.ignore_mismatched_sizes,
+                )
+        else:
             model = OPTWithClassifier.from_pretrained(
                 model_args.model_name_or_path,
                 from_tf=bool(".ckpt" in model_args.model_name_or_path),
@@ -388,8 +408,42 @@ def main():
             f"The max_seq_length passed ({data_args.max_seq_length}) is larger than the maximum length for the"
             f"model ({tokenizer.model_max_length}). Using max_seq_length={tokenizer.model_max_length}."
         )
-
+    # TODO: we can increase max_seq_length for testing
     max_seq_length = min(data_args.max_seq_length, tokenizer.model_max_length)
+
+    if ft_args.context_distillation_flag and training_args.do_train:
+
+        # map targets to ids and vice versa and set to model
+        context_target_tokens = [t.strip() for t in ft_args.context_target_tokens.split(",")]
+        context_id_to_target_token = {idx: t for idx, t in enumerate(context_target_tokens)}
+
+        # TODO: note, we don't have to use 16 examples, we can just load the train dataset until it hits the token limit
+        # num of examples = ft_args.num_shots
+        # Create context from training data
+        context, context_indices = create_few_shot_context(
+            dataset_name=data_args.task_name,
+            dataset=raw_datasets["train"],
+            num_shots=ft_args.num_shots,
+            pattern=ft_args.context_pattern,
+            label_to_tokens=context_id_to_target_token,
+            separate_shots_by=ft_args.separate_shots_by, 
+            description=ft_args.task_description,
+            target_prefix=ft_args.target_prefix,
+            from_indices=ft_args.sample_indices_file,
+            balanced=ft_args.balanced,
+            shuffle=ft_args.shuffle,
+            seed=training_args.data_seed,
+        )
+
+        # remove context indices from train_dataset
+        # need to ensure train dataset removes examples that are used for context 
+        updated_train_indices = [idx for idx in raw_datasets["train"]["idx"] if idx not in context_indices]
+        raw_datasets["train"] = raw_datasets["train"].filter(lambda s: s["idx"] in updated_train_indices)
+
+        # inspect context
+        logger.info("Using the following context for context distillation fine tuning:")
+        logger.info(context)
+
 
     def preprocess_function(examples):
         # Tokenize the texts
@@ -435,6 +489,44 @@ def main():
                                 for l in result["label"]]
 
         return result
+
+    def preprocess_with_context_function(examples):
+        # Tokenize the texts
+
+        # TODO: Context distllation, may need to perform preprocessing with a different pattern
+        # For context distillation Tokenize the texts
+
+        # Apply a pattern to the inputs
+        if context != "":
+            # we add the context here
+            pattern = f"{context}{ft_args.context_pattern}"
+        else:
+            pattern = ft_args.context_pattern
+
+        if ft_args.target_prefix != "":
+            pattern = f"{pattern} {ft_args.target_prefix.strip()}"
+
+        pattern_examples = [
+            pattern.format(
+                text1=examples[sentence1_key][idx],
+                text2=examples[sentence2_key][idx] if sentence2_key is not None else None)
+            for idx in range(len(examples[sentence1_key]))
+        ]
+
+        args = (pattern_examples,)
+        context_result = tokenizer(*args, padding=padding,
+                           max_length=max_seq_length, truncation=True)
+
+
+        # call the original preprocess function to generate result variable
+        result = preprocess_function(examples)
+
+        # add context related attributes to result
+        result["context_prepended_input_ids"] = context_result["input_ids"]
+        result["context_prepended_attention_mask"] = context_result["attention_mask"]
+
+        return result
+
 
     # We need to update the number of classes of the dataset when using the lm_head
     if ft_args.target_tokens is not None and not ft_args.target_tokens_logits_only:
@@ -528,7 +620,7 @@ def main():
     with training_args.main_process_first(desc="dataset map pre-processing"):
         if training_args.do_train:
             train_dataset = train_dataset.map(
-                preprocess_function,
+                preprocess_with_context_function if ft_args.context_distillation_flag else preprocess_function,
                 batched=True,
                 batch_size=1000,
                 load_from_cache_file=not data_args.overwrite_cache,

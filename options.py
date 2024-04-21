@@ -499,6 +499,60 @@ class FtArguments:
         },
     )
 
+    #### for creating context for context distllation: start ###
+    num_shots: int = field(
+        default=0,
+        metadata={
+            "help": (
+                "Total number of demonstrations in the context."
+            )
+        },
+    )
+
+    context_target_tokens: Optional[str] = field(
+        default=None, metadata={"help": "Comma separated list of target tokens to generate label mapping, e.g. ĠYes,ĠNo"}
+    )
+
+    context_pattern: Optional[str] = field(
+        default="{text1} {text2} ?", metadata={"help": "The input pattern. We will apply this pattern to every sample of the training and validation datasets."}
+    )
+
+    separate_shots_by: Optional[str] = field(
+        default=" ", metadata={"help": "How to separate demonstartions in the prompt. Default is empty space."}
+    )
+
+    task_description: Optional[str] = field(
+        default="", metadata={"help": "A description added to the beginning of the context"}
+    )
+
+    target_prefix: Optional[str] = field(
+        default="", metadata={"help": "A prefix to be added before the target token."}
+    )
+
+    sample_indices_file: Optional[str] = field(
+        default=None, metadata={"help": "Path to a file that contains indices for demonstrations."}
+    )
+
+    balanced: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Whether to choose an equal number of demonstrations from all available classes"
+            )
+        },
+    )
+
+    shuffle: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Whether to shuffle the demonstrations in the context"
+            )
+        },
+    )
+
+    #### for creating context for context distllation: start ###
+
     def __post_init__(self):
         # Sanity checks for fine-tuning arguments
         assert not (

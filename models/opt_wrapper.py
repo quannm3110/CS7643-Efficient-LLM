@@ -4,7 +4,8 @@ from typing import Optional, Tuple, Union, List
 
 import torch
 from torch import nn
-from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
+import torch.nn.functional as F
+from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss, KLDivLoss
 
 import transformers
 from transformers.models.opt import OPTModel, OPTForSequenceClassification, OPTForCausalLM
@@ -454,11 +455,6 @@ transformers.models.opt.modeling_opt.OPTDecoderLayer = OPTDecoderLayer
 
 class OPTWithClassifier(OPTForSequenceClassification):
 
-    # TODO: Context distillation:
-    # 0. Add another model class inheritting from this class (OPTWithClassifier)
-    # 1. clone self.model and set to another variable, freeze and use as P0
-    # 2. override with different loss (kl divergence) for P_theta model
-
     def __init__(self, config):
         super().__init__(config)
         self.soft_prompt_embeddings = None
@@ -733,3 +729,140 @@ class OPTWithLMClassifier(OPTForCausalLM):
         else:
             # do nothing
             print("**** Untying input and output embeddings ****")
+
+
+class OPTWithContextDistillationLMClassifier(OPTWithLMClassifier):
+    """
+    OPTForCausalLM class augmented to support Context Distillation
+    Paper: https://arxiv.org/pdf/2112.00861.pdf
+
+        p_0 = teacher model -> P(X | C)
+        p_theta = student model -> P(X)
+    
+    Context distillation changes (difference vs. OPTForCausalLM):
+        1. Init self.p_0 as None
+                self.p_0 is set after from_pretrained method is called (post model loading)
+                this is set in ft.py
+                self.p_0's parameters are frozen to prevent updates
+        2. Generate input data with context in forward pass when training
+                Clone input data and add context when model is in train mode
+        3. Feed input data with context into self.p_0 and obtain log probabilities
+        4. Feed input data without context into self.model and obtain log probabilities
+        5. Compute loss using #3 and #4 using KL divergence loss
+    """
+
+    def __init__(self, config):
+        super().__init__(config)
+
+        # set p_0 variable as None prior to loading with from_pretrained method
+        self.p_0 = None
+
+
+    def forward(
+        self,
+        input_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        context_prepended_input_ids: Optional[torch.LongTensor] = None,
+        context_prepended_attention_mask: Optional[torch.FloatTensor] = None,
+        head_mask: Optional[torch.Tensor] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> Union[Tuple, CausalLMOutputWithPast]:
+
+        # context distillation step: generate input data with context if model is in training mode
+        if self.model.training and context_prepended_input_ids:
+            self.p_0.model.eval()
+
+            p_0_outputs = self.p_0.model.decoder(
+                input_ids=context_prepended_input_ids,
+                attention_mask=context_prepended_attention_mask,
+                # head_mask=head_mask,
+                # past_key_values=past_key_values,
+                # inputs_embeds=inputs_embeds,
+                # use_cache=use_cache,
+                # output_attentions=output_attentions,
+                # output_hidden_states=output_hidden_states,
+                # return_dict=return_dict,
+            )
+
+            # logits.shape = (bsz, seq_len, vocab_size)
+            p_0_logits = self.p_0.lm_head(p_0_outputs[0])
+
+            # In the classification setting we only care about the last prediction
+            # Get the position of the last non-padding token
+            sequence_lengths = torch.ne(
+                context_prepended_input_ids, self.config.pad_token_id).sum(-1) - 1
+            p_0_logits = p_0_logits[torch.arange(
+                context_prepended_input_ids.shape[0], device=p_0_logits.device), sequence_lengths]
+
+
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
+        outputs = self.model.decoder(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            head_mask=head_mask,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+
+        # logits.shape = (bsz, seq_len, vocab_size)
+        logits = self.lm_head(outputs[0])
+
+        # In the classification setting we only care about the last prediction
+        # Get the position of the last non-padding token
+        sequence_lengths = torch.ne(
+            input_ids, self.config.pad_token_id).sum(-1) - 1
+        logits = logits[torch.arange(
+            input_ids.shape[0], device=logits.device), sequence_lengths]
+
+        loss = None
+        if labels is not None:
+            if context_prepended_input_ids:
+                # store top 50 probs to calculate KL divergence
+                p_0_log_probs = F.log_softmax(p_0_logits, dim=1)
+                p_0_top50 = torch.topk(p_0_log_probs, 50, dim=1)
+                p_theta_log_probs = F.log_softmax(logits, dim=1)
+
+                p_theta_top50 = torch.stack(
+                    [p_theta_log_probs[idx][p_0_top50.indices[idx]] for idx in range(len(logits))]
+                )
+
+                kl_loss = nn.KLDivLoss(reduction="batchmean", log_target=True)
+                loss = kl_loss(p_theta_top50, p_0_top50.values)
+            else:
+                logits = logits.contiguous()
+                # move labels to correct device to enable model parallelism
+                labels = labels.to(logits.device)
+                labels = labels.contiguous()
+
+                # Flatten the tokens
+                loss_fct = CrossEntropyLoss()
+                loss = loss_fct(
+                    logits.view(-1, self.config.vocab_size), labels.view(-1))
+
+        if not return_dict:
+            output = (logits,) + outputs[1:]
+            return (loss,) + output if loss is not None else output
+
+        return CausalLMOutputWithPast(
+            loss=loss,
+            logits=logits,
+            past_key_values=outputs.past_key_values,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
