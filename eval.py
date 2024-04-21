@@ -339,7 +339,7 @@ def main():
     # -------------------------------------------------
 
     # Create in-context learning prompt from training data
-    context, contex_indices = create_few_shot_context(
+    context, context_indices = create_few_shot_context(
         data_args.task_name, raw_datasets["train"], in_context_args.num_shots, pattern=in_context_args.pattern,
         label_to_tokens=id_to_target_token,
         separate_shots_by=in_context_args.separate_shots_by, description=in_context_args.task_description,
@@ -611,7 +611,7 @@ def main():
 
             # Save everything to in a dataframe
             all_results = _add_args_to_results(in_context_args, all_results)
-            all_results["indices"] = contex_indices
+            all_results["indices"] = context_indices
             all_results["context"] = context
             all_results["data_seed"] = training_args.data_seed
             all_results["keep_samples_in-domain"] = keep_counter["in-domain"]
