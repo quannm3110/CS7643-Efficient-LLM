@@ -775,7 +775,7 @@ class OPTWithContextDistillationLMClassifier(OPTWithLMClassifier):
     ) -> Union[Tuple, CausalLMOutputWithPast]:
 
         # context distillation step: generate input data with context if model is in training mode
-        if self.model.training and context_prepended_input_ids:
+        if self.model.training and context_prepended_input_ids is not None:
             self.p_0.model.eval()
 
             p_0_outputs = self.p_0.model.decoder(
@@ -832,7 +832,7 @@ class OPTWithContextDistillationLMClassifier(OPTWithLMClassifier):
 
         loss = None
         if labels is not None:
-            if context_prepended_input_ids:
+            if context_prepended_input_ids is not None:
                 # store top 50 probs to calculate KL divergence
                 p_0_log_probs = F.log_softmax(p_0_logits, dim=1)
                 p_0_top50 = torch.topk(p_0_log_probs, 50, dim=1)

@@ -263,7 +263,7 @@ def main():
 
                 if training_args.do_train:
                     logger.info("Proceeding to clone pre-trained model and freeze it for usage as p_0 (context distillation)")
-                    model.p_0 = copy.deepcopy(model.model)
+                    model.p_0 = copy.deepcopy(model)
                     for param in model.p_0.parameters():
                         param.requires_grad = False
                     logger.info("p_0 initialised and layers have been frozen")
