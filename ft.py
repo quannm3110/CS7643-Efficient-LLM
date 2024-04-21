@@ -17,6 +17,7 @@
 # You can also adapt this script on your own text classification task. Pointers for this are left as comments.
 
 import logging
+import math
 import os
 import random
 import sys
@@ -39,7 +40,7 @@ from transformers import (
     Trainer,
     TrainingArguments,
     default_data_collator,
-    set_seed,
+    set_seed, DataCollatorForLanguageModeling,
 )
 from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import check_min_version, send_example_telemetry
@@ -47,7 +48,8 @@ from transformers.utils.versions import require_version
 
 from options import DataTrainingArguments, ModelArguments, WandbArguments, FtArguments
 from utils import create_dir, get_timestamp
-from task_utils import task_to_keys, load_glue_datasets, load_hans_dataset, load_mnli_mismatched_dataset, load_paws_qqp_dataset, load_cola_ood_dataset, save_dataset
+from task_utils import task_to_keys, load_glue_datasets, load_hans_dataset, load_mnli_mismatched_dataset, \
+    load_paws_qqp_dataset, load_cola_ood_dataset, save_dataset, load_se_datasets
 from ft_trainer import FtTrainer
 from models.gptj_wrapper import GPTJWithClassifier, GPTJWithLMClassifier
 from models.opt_wrapper import OPTWithClassifier, OPTWithLMClassifier
@@ -63,6 +65,7 @@ require_version("datasets>=1.8.0",
 
 logger = logging.getLogger(__name__)
 
+se_dataset, eli5 = None, None
 
 def main():
     # See all possible arguments in src/transformers/training_args.py
@@ -91,7 +94,7 @@ def main():
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
 #        handlers=[logging.StreamHandler(sys.stdout)],
-        filename='/content/drive/MyDrive/Colab-Notebooks/cs7643-prj/llmft/logs/output.log', filemode='w'
+        filename='./logs/output.log', filemode='w'
     )
 
     log_level = training_args.get_process_log_level()
@@ -315,6 +318,77 @@ def main():
         raise NotImplementedError(
             f"Unsupported model_name_or_path: {model_args.model_name_or_path}")
 
+    # my testing begins
+#    model = OPTWithClassifier.from_pretrained(
+#        model_args.model_name_or_path,
+#        from_tf=bool(".ckpt" in model_args.model_name_or_path),
+#        config=config,
+#        cache_dir=model_args.cache_dir,
+#        revision=model_args.model_revision,
+#        use_auth_token=True if model_args.use_auth_token else None,
+#        ignore_mismatched_sizes=model_args.ignore_mismatched_sizes,
+#    )
+
+    se_dataset, eli5 = load_se_datasets(data_args)
+    model.eli5 = eli5
+#    eli5 = eli5.train_test_split(test_size=0.2)
+#    eli5 = eli5.flatten()
+
+#    def eli5_preprocess_function(examples):
+#        return tokenizer([" ".join(x) for x in examples["answers.text"]])
+
+#    tokenized_eli5 = eli5.map(
+#        eli5_preprocess_function,
+#        batched=True,
+#        num_proc=4,
+#        remove_columns=eli5["train"].column_names
+#    )
+
+#    block_size = data_args.max_seq_length
+
+#    def group_texts(examples):
+#        # Concatenate all texts.
+#        concatenated_examples = {k: sum(examples[k], []) for k in examples.keys()}
+#        total_length = len(concatenated_examples[list(examples.keys())[0]])
+#        # We drop the small remainder, we could add padding if the model supported it instead of this drop, you can
+#        # customize this part to your needs.
+#        if total_length >= block_size:
+#            total_length = (total_length // block_size) * block_size
+#        # Split by chunks of block_size.
+#        result = {
+#            k: [t[i: i + block_size] for i in range(0, total_length, block_size)]
+#            for k, t in concatenated_examples.items()
+#        }
+#        return result
+
+#    lm_dataset = tokenized_eli5.map(group_texts, batched=True, num_proc=4)
+#    tokenizer.pad_token = tokenizer.eos_token
+#    data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm_probability=0.15)
+
+#    training_args = TrainingArguments(
+#        output_dir="./output",
+#        evaluation_strategy="epoch",
+#        learning_rate=2e-5,
+#        num_train_epochs=3,
+#        weight_decay=0.01,
+#        push_to_hub=False,
+#    )
+
+#    trainer = Trainer(
+#        model=model,
+#        args=training_args,
+#        train_dataset=lm_dataset["train"],
+#        eval_dataset=lm_dataset["test"],
+#        data_collator=data_collator,
+#    )
+
+#    trainer.train()
+#    eval_results = trainer.evaluate()
+#    print(f"Perplexity: {math.exp(eval_results['eval_loss']):.2f}")
+
+
+    # my testing ends
+
     # --------------- Preprocessing the raw_datasets ---------------
 
     if data_args.task_name is not None:
@@ -388,6 +462,67 @@ def main():
         )
 
     max_seq_length = min(data_args.max_seq_length, tokenizer.model_max_length)
+
+    def preprocess_context_distillation_function(examples):
+        # Tokenize the texts
+
+        # Apply a pattern to the inputs
+        pattern_examples = [
+            ft_args.pattern.format(
+                text1=examples[sentence1_key][idx],
+                text2=examples[sentence2_key][idx] if sentence2_key is not None else None)
+            for idx in range(len(examples[sentence1_key]))
+        ]
+        # believe we can also reuse the samples on a wider number of eli5 samples
+        eli5_indices = np.random.choice(range(len(model.eli5)), len(pattern_examples), replace=False)
+
+        org_examples = [
+            model.eli5[eli5_indices[idx].item()]["title"] for idx in range(len(pattern_examples))
+        ]
+        org_args = (org_examples,)
+        org_result = tokenizer(*org_args, padding=padding, max_length=max_seq_length, truncation=True)
+
+        context_distillation_format = 'Human: {0}, Assistant: {1} {2}'
+        context_distillation_examples = [
+            context_distillation_format.format(model.eli5[eli5_indices[idx].item()]["title"], pattern_examples[idx], examples["label"][idx])
+            for idx in range(len(pattern_examples))
+        ]
+        args = (context_distillation_examples,)
+        result = tokenizer(*args, padding=padding,
+                           max_length=max_seq_length, truncation=True)
+
+        # put the org_input_ids and org_attention_mask to result
+        result["org_input_ids"] = org_result["input_ids"]
+        result["org_attention_mask"] = org_result["attention_mask"]
+
+        # Get mask for soft prompt tokens
+        # TODO(mm): For GPT-J and GPT-NeoX we have a different tokenizer. Adjust accordingly
+        if "opt" in model_args.model_name_or_path:
+            # For OPT models, the first token is always the bos token </s>
+            # Which happens to be also the unk token we use to mark soft prompt tokens
+            # Hence, we have to be careful about which tokens to mask as part of the soft prompt
+            result["soft_prompt_mask"] = [[0 if (idx != tokenizer.unk_token_id or pos == 0) else 1 for pos, idx in enumerate(indices)]
+                                          for indices in result["input_ids"]]  # <unk> is the placeholder for prompt embeddings
+
+        # Get tokens
+        result["input_tokens"] = [tokenizer.convert_ids_to_tokens(
+            ids) for ids in result["input_ids"]]
+
+        # Decode input
+        result["input_text"] = [tokenizer.decode(
+            ids) for ids in result["input_ids"]]
+
+        # Replace labels by target tokens indices when using lm_head
+        # - special case: when using target logits only, we keep class indices instead of token indices
+        if ft_args.target_tokens is not None and not ft_args.target_tokens_logits_only:
+            result["label"] = [target_tokens_ids[l] for l in examples["label"]]
+        else:
+            result["label"] = examples["label"]
+
+        result["label_text"] = [model.config.id2label[l] if l != -1 else "unlabeled"
+                                for l in result["label"]]
+
+        return result
 
     def preprocess_function(examples):
         # Tokenize the texts
@@ -524,7 +659,7 @@ def main():
     with training_args.main_process_first(desc="dataset map pre-processing"):
         if training_args.do_train:
             train_dataset = train_dataset.map(
-                preprocess_function,
+                preprocess_context_distillation_function if ft_args.use_context_distillation else preprocess_function,
                 batched=True,
                 batch_size=1000,
                 load_from_cache_file=not data_args.overwrite_cache,
@@ -709,4 +844,6 @@ def _mp_fn(index):
 
 
 if __name__ == "__main__":
+    import os
+    os.environ['PROJECT_DIR'] = "./"
     main()

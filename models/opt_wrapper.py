@@ -1,5 +1,5 @@
 import math
-import deepspeed
+# import deepspeed
 from typing import Optional, Tuple, Union, List
 
 import torch
@@ -14,6 +14,8 @@ from transformers.modeling_outputs import SequenceClassifierOutputWithPast, Caus
 from transformers.utils import logging
 
 from transformers.deepspeed import is_deepspeed_zero3_enabled
+
+import torch.nn.functional as F
 
 logger = logging.get_logger(__name__)
 
@@ -43,17 +45,17 @@ class LoRAAdapter(nn.Module):
         nn.init.zeros_(self.up.weight)
         nn.init.zeros_(self.up.bias)
 
-    def _init_weights(self):
+    # def _init_weights(self):
         # we will run this only when using deepspeed ZeRO stage 3
         # as in that case the initialization above will be ignored and we need to gather weights before initializing them
 
-        with deepspeed.zero.GatheredParameters([self.down.weight, self.down.bias, self.up.weight, self.up.bias], modifier_rank=0):
-            if deepspeed.comm.get_rank() == 0:
-                nn.init.kaiming_uniform_(self.down.weight, a=math.sqrt(5))
-                nn.init.zeros_(self.down.bias)
-                # LoRA initializes the second matrix with zeros
-                nn.init.zeros_(self.up.weight)
-                nn.init.zeros_(self.up.bias)
+        # with deepspeed.zero.GatheredParameters([self.down.weight, self.down.bias, self.up.weight, self.up.bias], modifier_rank=0):
+        #     if deepspeed.comm.get_rank() == 0:
+        #         nn.init.kaiming_uniform_(self.down.weight, a=math.sqrt(5))
+        #         nn.init.zeros_(self.down.bias)
+        #         LoRA initializes the second matrix with zeros
+        #         nn.init.zeros_(self.up.weight)
+        #         nn.init.zeros_(self.up.bias)
 
     def forward(self, x):
         x = self.down(x)
@@ -81,16 +83,16 @@ class MLPAdapter(nn.Module):
         nn.init.kaiming_uniform_(self.up.weight, a=math.sqrt(5))
         nn.init.zeros_(self.up.bias)
 
-    def _init_weights(self):
+    # def _init_weights(self):
         # we will run this only when using deepspeed ZeRO stage 3
         # as in that case the initialization above will be ignored and we need to gather weights before initializing them
 
-        with deepspeed.zero.GatheredParameters([self.down.weight, self.down.bias, self.up.weight, self.up.bias], modifier_rank=0):
-            if deepspeed.comm.get_rank() == 0:
-                nn.init.kaiming_uniform_(self.down.weight, a=math.sqrt(5))
-                nn.init.zeros_(self.down.bias)
-                nn.init.kaiming_uniform_(self.up.weight, a=math.sqrt(5))
-                nn.init.zeros_(self.up.bias)
+        # with deepspeed.zero.GatheredParameters([self.down.weight, self.down.bias, self.up.weight, self.up.bias], modifier_rank=0):
+        #     if deepspeed.comm.get_rank() == 0:
+        #         nn.init.kaiming_uniform_(self.down.weight, a=math.sqrt(5))
+        #         nn.init.zeros_(self.down.bias)
+        #         nn.init.kaiming_uniform_(self.up.weight, a=math.sqrt(5))
+        #         nn.init.zeros_(self.up.bias)
 
     def forward(self, x):
         x = self.down(x)
@@ -623,6 +625,8 @@ class OPTWithClassifier(OPTForSequenceClassification):
 class OPTWithLMClassifier(OPTForCausalLM):
     def __init__(self, config):
         super().__init__(config)
+        # store a p0_model as well
+        self.p0 = OPTForCausalLM(config)
 
     def _init_weights(self, module):
         super()._init_weights(module)
@@ -637,7 +641,9 @@ class OPTWithLMClassifier(OPTForCausalLM):
     def forward(
         self,
         input_ids: torch.LongTensor = None,
+        org_input_ids: torch.LongTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
+        org_attention_mask: Optional[torch.Tensor] = None,
         head_mask: Optional[torch.Tensor] = None,
         past_key_values: Optional[List[torch.FloatTensor]] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
@@ -654,40 +660,102 @@ class OPTWithLMClassifier(OPTForCausalLM):
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
-        outputs = self.model.decoder(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            head_mask=head_mask,
-            past_key_values=past_key_values,
-            inputs_embeds=inputs_embeds,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-        )
+        if org_input_ids is not None:  # training   input_ids = X|C
+            # P0(X|C)
+            self.p0.model.eval()
+            p0_outputs = self.p0.model.decoder(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                head_mask=head_mask,
+                past_key_values=past_key_values,
+                inputs_embeds=inputs_embeds,
+                use_cache=use_cache,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+            )
 
-        # logits.shape = (bsz, seq_len, vocab_size)
-        logits = self.lm_head(outputs[0])
+            # logits.shape = (bsz, seq_len, vocab_size)  768 => 50k
+            p0_logits = self.p0.lm_head(p0_outputs[0])
 
-        # In the classification setting we only care about the last prediction
-        # Get the position of the last non-padding token
-        sequence_lengths = torch.ne(
-            input_ids, self.config.pad_token_id).sum(-1) - 1
-        logits = logits[torch.arange(
-            input_ids.shape[0], device=logits.device), sequence_lengths]
+            # In the classification setting we only care about the last prediction
+            # Get the position of the last non-padding token
+            sequence_lengths = torch.ne(
+                input_ids, self.config.pad_token_id).sum(-1) - 1
+            p0_logits = p0_logits[torch.arange(
+                input_ids.shape[0], device=p0_logits.device), sequence_lengths]
 
-        loss = None
-        if labels is not None:
-            logits = logits.contiguous()
+            # P_theta(X)
+            # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
+            outputs = self.model.decoder(
+                input_ids=org_input_ids,
+                attention_mask=org_attention_mask,
+                head_mask=head_mask,
+                past_key_values=past_key_values,
+                inputs_embeds=inputs_embeds,
+                use_cache=use_cache,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+            )
+
+            # logits.shape = (bsz, seq_len, vocab_size)
+            logits = self.lm_head(outputs[0])
+
+            # In the classification setting we only care about the last prediction
+            # Get the position of the last non-padding token
+            sequence_lengths = torch.ne(
+                org_input_ids, self.config.pad_token_id).sum(-1) - 1
+            logits = logits[torch.arange(
+                org_input_ids.shape[0], device=logits.device), sequence_lengths]
+
+            loss = None
+            if labels is not None:
+                # store top 50 probs to calculate KL divergence
+                p0_top50 = torch.topk(F.log_softmax(p0_logits, dim=1), 50, dim=1)
+                ptheta_top50 = torch.stack(
+                    [F.log_softmax(logits, dim=1)[idx][p0_top50.indices[idx]] for idx in range(len(logits))])
+
+                kl_loss = nn.KLDivLoss(reduction="batchmean", log_target=True)
+                loss = kl_loss(ptheta_top50, p0_top50.values)
+
+        else:  # eval
+            # P_theta(C)
+            # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
+            outputs = self.model.decoder(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                head_mask=head_mask,
+                past_key_values=past_key_values,
+                inputs_embeds=inputs_embeds,
+                use_cache=use_cache,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+            )
+
+            # logits.shape = (bsz, seq_len, vocab_size)
+            logits = self.lm_head(outputs[0])
+
+            # In the classification setting we only care about the last prediction
+            # Get the position of the last non-padding token
+            sequence_lengths = torch.ne(
+                input_ids, self.config.pad_token_id).sum(-1) - 1
+            logits = logits[torch.arange(
+                input_ids.shape[0], device=logits.device), sequence_lengths]
+
+            # logits = logits.contiguous()
             # move labels to correct device to enable model parallelism
-            labels = labels.to(logits.device)
-            labels = labels.contiguous()
+            # labels = labels.to(logits.device)
+            # labels = labels.contiguous()
 
             # Flatten the tokens
             loss_fct = CrossEntropyLoss()
             loss = loss_fct(
                 logits.view(-1, self.config.vocab_size), labels.view(-1))
+
+
+
 
         if not return_dict:
             output = (logits,) + outputs[1:]

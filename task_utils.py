@@ -87,6 +87,11 @@ def save_dataset(dataset, path):
     df.to_csv(path, columns=dataset_dict.keys())
 
 
+def load_se_datasets(data_args):
+    se_dataset = load_dataset("habedi/stack-exchange-dataset", cache_dir=data_args.dataset_cache_dir)
+    eli5 = load_dataset("eli5_category", split="train[:5000]")
+    return se_dataset, eli5
+
 def load_glue_datasets(data_args, model_args):
     # Get the datasets: specify a GLUE benchmark task (the dataset will be downloaded automatically from the datasets Hub).
     #

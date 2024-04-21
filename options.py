@@ -335,6 +335,15 @@ class ModelArguments:
 @dataclass
 class FtArguments:
     # General fine-tuning args
+    use_context_distillation: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Fine-tune with context distillation."
+            )
+        },
+    )
+
     freeze_embeddings: bool = field(
         default=False,
         metadata={
