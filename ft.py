@@ -482,9 +482,11 @@ def main():
         org_args = (org_examples,)
         org_result = tokenizer(*org_args, padding=padding, max_length=max_seq_length, truncation=True)
 
-        context_distillation_format = 'Human: {0}, Assistant: {1} {2}'
+        context_distillation_format = 'Given Assistant: {1} {2}, What is Human: {0}?'
         context_distillation_examples = [
-            context_distillation_format.format(model.eli5[eli5_indices[idx].item()]["title"], pattern_examples[idx], examples["label"][idx])
+            context_distillation_format.format(model.eli5[eli5_indices[idx].item()]["title"], pattern_examples[idx],
+                                               examples["label"][idx])
+                                               # model.config.id2label[target_tokens_ids[examples["label"][idx]]])
             for idx in range(len(pattern_examples))
         ]
         args = (context_distillation_examples,)

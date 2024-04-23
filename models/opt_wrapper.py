@@ -712,12 +712,19 @@ class OPTWithLMClassifier(OPTForCausalLM):
             loss = None
             if labels is not None:
                 # store top 50 probs to calculate KL divergence
-                p0_top50 = torch.topk(F.log_softmax(p0_logits, dim=1), 50, dim=1)
-                ptheta_top50 = torch.stack(
-                    [F.log_softmax(logits, dim=1)[idx][p0_top50.indices[idx]] for idx in range(len(logits))])
+                # p0_top50 = torch.topk(F.log_softmax(p0_logits, dim=1), 50, dim=1)
+                # ptheta_top50 = torch.stack(
+                #     [F.log_softmax(logits, dim=1)[idx][p0_top50.indices[idx]] for idx in range(len(logits))])
+                # kl_loss = nn.KLDivLoss(reduction="batchmean", log_target=True)
+                # loss = kl_loss(ptheta_top50, p0_top50.values)
 
-                kl_loss = nn.KLDivLoss(reduction="batchmean", log_target=True)
-                loss = kl_loss(ptheta_top50, p0_top50.values)
+                top50 = torch.topk(p0_logits, 50, dim=1)
+                p0_top50 = F.softmax(top50.values, dim=1)
+                ptheta_top50 = F.softmax(torch.stack([logits[idx, top50.indices[idx]] for idx in range(len(logits))]), dim=1)
+
+                kl_loss = nn.KLDivLoss(reduction="batchmean")
+                loss = kl_loss(ptheta_top50.log(), p0_top50)
+                print(f'KL Divergence = {loss}')
 
         else:  # eval
             # P_theta(C)
