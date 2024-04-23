@@ -509,6 +509,17 @@ class FtArguments:
         },
     )
 
+    context_max_seq_length: int = field(
+        default=2048,
+        metadata={
+            "help": (
+                "This is for the p_0 model input sequence, we will declare this value to be higher as it includes context."
+                "The maximum total input sequence length after tokenization. Sequences longer "
+                "than this will be truncated, sequences shorter will be padded."
+            )
+        },
+    )
+
     context_target_tokens: Optional[str] = field(
         default=None, metadata={"help": "Comma separated list of target tokens to generate label mapping, e.g. ĠYes,ĠNo"}
     )

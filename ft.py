@@ -408,8 +408,17 @@ def main():
             f"The max_seq_length passed ({data_args.max_seq_length}) is larger than the maximum length for the"
             f"model ({tokenizer.model_max_length}). Using max_seq_length={tokenizer.model_max_length}."
         )
-    # TODO: we can increase max_seq_length for testing
+    
     max_seq_length = min(data_args.max_seq_length, tokenizer.model_max_length)
+    
+    # Compute context_max_seq_length
+    if ft_args.context_max_seq_length > tokenizer.model_max_length:
+        logger.warning(
+            f"The context_max_seq_length passed ({ft_args.context_max_seq_length}) is larger than the maximum length for the"
+            f"model ({tokenizer.model_max_length}). Using context_max_seq_length={tokenizer.model_max_length}."
+    )
+
+    context_max_seq_length = min(ft_args.context_max_seq_length, tokenizer.model_max_length)
 
     if ft_args.context_distillation_flag and training_args.do_train:
 
@@ -417,7 +426,6 @@ def main():
         context_target_tokens = [t.strip() for t in ft_args.context_target_tokens.split(",")]
         context_id_to_target_token = {idx: t for idx, t in enumerate(context_target_tokens)}
 
-        # TODO: note, we don't have to use 16 examples, we can just load the train dataset until it hits the token limit
         # num of examples = ft_args.num_shots
         # Create context from training data
         context, context_indices = create_few_shot_context(
@@ -447,9 +455,6 @@ def main():
 
     def preprocess_function(examples):
         # Tokenize the texts
-
-        # TODO: Context distllation, may need to perform preprocessing with a different pattern
-
         # Apply a pattern to the inputs
         pattern_examples = [
             ft_args.pattern.format(
@@ -493,13 +498,14 @@ def main():
     def preprocess_with_context_function(examples):
         # Tokenize the texts
 
-        # TODO: Context distllation, may need to perform preprocessing with a different pattern
+        # Context distllation, may need to perform preprocessing with a different pattern
         # For context distillation Tokenize the texts
 
         # Apply a pattern to the inputs
         if context != "":
             # we add the context here
             pattern = f"{context}{ft_args.context_pattern}"
+            # pattern = f"With this context: '{context}' Answer this: {ft_args.context_pattern}"
         else:
             pattern = ft_args.context_pattern
 
@@ -515,7 +521,7 @@ def main():
 
         args = (pattern_examples,)
         context_result = tokenizer(*args, padding=padding,
-                           max_length=max_seq_length, truncation=True)
+                           max_length=context_max_seq_length, truncation=True)
 
 
         # call the original preprocess function to generate result variable
