@@ -48,7 +48,7 @@ from transformers.utils.versions import require_version
 
 from options import DataTrainingArguments, ModelArguments, WandbArguments, FtArguments
 from utils import create_dir, get_timestamp
-from task_utils import task_to_keys, load_glue_datasets, load_hans_dataset, load_mnli_mismatched_dataset, load_paws_qqp_dataset, load_cola_ood_dataset, save_dataset
+from task_utils import task_to_keys, load_glue_datasets, load_hans_dataset, load_mnli_mismatched_dataset, load_paws_qqp_dataset, load_cola_ood_dataset, save_dataset, load_context_distllation_datasets
 from ft_trainer import FtTrainer
 from models.gptj_wrapper import GPTJWithClassifier, GPTJWithLMClassifier
 from models.opt_wrapper import OPTWithClassifier, OPTWithLMClassifier, OPTWithContextDistillationLMClassifier
@@ -445,15 +445,18 @@ def main():
 
         # remove context indices from train_dataset
         # need to ensure train dataset removes examples that are used for context 
-        updated_train_indices = [idx for idx in raw_datasets["train"]["idx"] if idx not in context_indices]
-        raw_datasets["train"] = raw_datasets["train"].filter(lambda s: s["idx"] in updated_train_indices)
+        if ft_args.use_original_data_as_X_flag:
+            updated_train_indices = [idx for idx in raw_datasets["train"]["idx"] if idx not in context_indices]
+            raw_datasets["train"] = raw_datasets["train"].filter(lambda s: s["idx"] in updated_train_indices)
+        se, eli5 = load_context_distllation_datasets(data_args)
+        model.eli5 = eli5
 
         # inspect context
         logger.info("Using the following context for context distillation fine tuning:")
         logger.info(context)
 
 
-    def preprocess_function(examples):
+    def original_preprocess_function(examples):
         # Tokenize the texts
         # Apply a pattern to the inputs
         pattern_examples = [
@@ -495,6 +498,7 @@ def main():
 
         return result
 
+
     def preprocess_with_context_function(examples):
         # Tokenize the texts
 
@@ -504,32 +508,109 @@ def main():
         # Apply a pattern to the inputs
         if context != "":
             # we add the context here
-            pattern = f"{context}{ft_args.context_pattern}"
-            # pattern = f"With this context: '{context}' Answer this: {ft_args.context_pattern}"
+            if ft_args.use_original_data_as_X_flag:
+                pattern = f"{context}{ft_args.context_pattern}"
+            else:
+                pattern = context + "{text1}?"
         else:
-            pattern = ft_args.context_pattern
+            pattern = ft_args.pattern
 
         if ft_args.target_prefix != "":
             pattern = f"{pattern} {ft_args.target_prefix.strip()}"
 
-        pattern_examples = [
-            pattern.format(
-                text1=examples[sentence1_key][idx],
-                text2=examples[sentence2_key][idx] if sentence2_key is not None else None)
-            for idx in range(len(examples[sentence1_key]))
-        ]
 
-        args = (pattern_examples,)
-        context_result = tokenizer(*args, padding=padding,
-                           max_length=context_max_seq_length, truncation=True)
+        if ft_args.use_original_data_as_X_flag:
+            pattern_examples = [
+                pattern.format(
+                    text1=examples[sentence1_key][idx],
+                    text2=examples[sentence2_key][idx] if sentence2_key is not None else None)
+                for idx in range(len(examples[sentence1_key]))
+            ]
+
+            args = (pattern_examples,)
+            context_result = tokenizer(*args, padding=padding,
+                            max_length=context_max_seq_length, truncation=True)
+            
+
+            # call the original preprocess function to generate result variable
+            pattern_examples = [
+                ft_args.pattern.format(
+                    text1=examples[sentence1_key][idx],
+                    text2=examples[sentence2_key][idx] if sentence2_key is not None else None)
+                for idx in range(len(examples[sentence1_key]))
+            ]
+
+            args = (pattern_examples,)
+            result = tokenizer(*args, padding=padding,
+                            max_length=max_seq_length, truncation=True,
+                            return_overflowing_tokens=True,)
+
+            # add context related attributes to result
+            result["context_prepended_input_ids"] = context_result["input_ids"]
+            result["context_prepended_attention_mask"] = context_result["attention_mask"]
 
 
-        # call the original preprocess function to generate result variable
-        result = preprocess_function(examples)
+            # Get mask for soft prompt tokens
+            # TODO(mm): For GPT-J and GPT-NeoX we have a different tokenizer. Adjust accordingly
+            if "opt" in model_args.model_name_or_path:
+                # For OPT models, the first token is always the bos token </s>
+                # Which happens to be also the unk token we use to mark soft prompt tokens
+                # Hence, we have to be careful about which tokens to mask as part of the soft prompt
+                result["soft_prompt_mask"] = [[0 if (idx != tokenizer.unk_token_id or pos == 0) else 1 for pos, idx in enumerate(indices)]
+                                            for indices in result["input_ids"]]  # <unk> is the placeholder for prompt embeddings
 
-        # add context related attributes to result
-        result["context_prepended_input_ids"] = context_result["input_ids"]
-        result["context_prepended_attention_mask"] = context_result["attention_mask"]
+            # Get tokens
+            result["input_tokens"] = [tokenizer.convert_ids_to_tokens(
+                ids) for ids in result["input_ids"]]
+
+            # Decode input
+            result["input_text"] = [tokenizer.decode(
+                ids) for ids in result["input_ids"]]
+
+            # Replace labels by target tokens indices when using lm_head
+            # - special case: when using target logits only, we keep class indices instead of token indices
+            if ft_args.target_tokens is not None and not ft_args.target_tokens_logits_only:
+                result["label"] = [target_tokens_ids[l] for l in examples["label"]]
+            else:
+                result["label"] = examples["label"]
+
+            result["label_text"] = [model.config.id2label[l] if l != -1 else "unlabeled"
+                                    for l in result["label"]]
+        
+        else:
+        
+            eli5_indices = np.random.choice(range(len(model.eli5)), len(examples), replace=False)
+
+            eli5_examples = [
+                model.eli5[eli5_indices[idx].item()]["title"] for idx in range(len(examples))
+            ]
+
+            pattern_examples = [
+                pattern.format(text1=example) for example in eli5_examples
+            ]
+
+            args = (pattern_examples,)
+            context_result = tokenizer(*args, padding=padding,
+                            max_length=context_max_seq_length, truncation=True)
+
+            # call the original preprocess function to generate result variable
+            pattern_examples = [
+                "{text1}?".format(text1=example)
+                for example in eli5_examples
+            ]
+
+            args = (pattern_examples,)
+            result = tokenizer(*args, padding=padding,
+                            max_length=max_seq_length, truncation=True,
+                            return_overflowing_tokens=True,)
+
+            # add context related attributes to result
+            result["context_prepended_input_ids"] = context_result["input_ids"]
+            result["context_prepended_attention_mask"] = context_result["attention_mask"]
+
+            sample_map = result.pop("overflow_to_sample_mapping")
+            for key, values in examples.items():
+                result[key] = [values[i] for i in sample_map]
 
         return result
 
@@ -626,7 +707,7 @@ def main():
     with training_args.main_process_first(desc="dataset map pre-processing"):
         if training_args.do_train:
             train_dataset = train_dataset.map(
-                preprocess_with_context_function if ft_args.context_distillation_flag else preprocess_function,
+                preprocess_with_context_function if ft_args.context_distillation_flag else original_preprocess_function,
                 batched=True,
                 batch_size=1000,
                 load_from_cache_file=not data_args.overwrite_cache,
@@ -635,7 +716,7 @@ def main():
 
         if training_args.do_eval:
             eval_dataset = eval_dataset.map(
-                preprocess_function,
+                original_preprocess_function,
                 batched=True,
                 batch_size=1000,
                 load_from_cache_file=not data_args.overwrite_cache,
@@ -644,7 +725,7 @@ def main():
 
         if training_args.do_predict:
             predict_dataset = predict_dataset.map(
-                preprocess_function,
+                original_preprocess_function,
                 batched=True,
                 batch_size=1000,
                 load_from_cache_file=not data_args.overwrite_cache,
@@ -662,7 +743,7 @@ def main():
                 sentence1_key, sentence2_key = task_to_keys["cola-ood"]
 
             dataset = dataset.map(
-                preprocess_function,
+                original_preprocess_function,
                 batched=True,
                 batch_size=1000,
                 load_from_cache_file=not data_args.overwrite_cache,
@@ -678,8 +759,9 @@ def main():
 
     # Log training and evaluation examples to training_args.output_dir for reproducibility
     if training_args.do_train:
-        save_dataset(train_dataset, path=os.path.join(
-            training_args.output_dir, f"{data_args.task_name}-train.csv"))
+        if not ft_args.context_distillation_flag:
+            save_dataset(train_dataset, path=os.path.join(
+                training_args.output_dir, f"{data_args.task_name}-train.csv"))
     if training_args.do_eval:
         save_dataset(eval_dataset, path=os.path.join(
             training_args.output_dir, f"{data_args.task_name}-eval.csv"))
