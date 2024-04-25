@@ -499,6 +499,17 @@ class FtArguments:
         },
     )
 
+    # flag to same dataset for both X and C instead of eli5 for X
+    use_original_data_as_X_flag: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "True, X and C from same train dataset"
+                "False, X from eli5, C from train dataset"
+            )
+        },
+    )
+
     #### for creating context for context distllation: start ###
     num_shots: int = field(
         default=0,
