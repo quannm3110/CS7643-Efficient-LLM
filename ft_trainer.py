@@ -51,6 +51,7 @@ import time
 import math
 import sys
 from tqdm.auto import tqdm
+import pandas as pd
 
 if is_apex_available():
     from apex import amp
@@ -598,6 +599,7 @@ class FtTrainer(Trainer):
                 self._load_rng_state(resume_from_checkpoint)
 
             step = -1
+            epoch_metrics_df = []
             for step, inputs in enumerate(epoch_iterator):
 
                 # Skip past any already trained steps if resuming training
@@ -707,7 +709,7 @@ class FtTrainer(Trainer):
                     self.control = self.callback_handler.on_step_end(
                         args, self.state, self.control)
 
-                    self._maybe_log_save_evaluate(
+                    metrics_df = self._maybe_log_save_evaluate(
                         tr_loss, model, trial, epoch, ignore_keys_for_eval)
                 else:
                     self.control = self.callback_handler.on_substep_end(
@@ -725,8 +727,10 @@ class FtTrainer(Trainer):
 
             self.control = self.callback_handler.on_epoch_end(
                 args, self.state, self.control)
-            self._maybe_log_save_evaluate(
+            
+            metrics_df = self._maybe_log_save_evaluate(
                 tr_loss, model, trial, epoch, ignore_keys_for_eval)
+            epoch_metrics_df.append(metrics_df)
 
             if DebugOption.TPU_METRICS_DEBUG in self.args.debug:
                 if is_torch_tpu_available():
@@ -743,6 +747,18 @@ class FtTrainer(Trainer):
         if args.past_index and hasattr(self, "_past"):
             # Clean the state at the end of training
             delattr(self, "_past")
+
+        output_file_name = self.ft_args.output_file
+        e = len(epoch_metrics_df)
+        epoch_metrics_df = pd.concat(epoch_metrics_df, axis=0)
+        epoch_metrics_df = epoch_metrics_df.drop(epoch_metrics_df[epoch_metrics_df.eval_mnli_runtime==None].index)
+        output_file = os.path.join(
+                args.output_dir, f"{output_file_name}.csv")
+        if os.path.exists(output_file):
+            # if the file already exists, we append to it
+            epoch_metrics_df.to_csv(output_file, mode='a', header=False)
+        else:
+            epoch_metrics_df.to_csv(output_file)
 
         logger.info(
             "\n\nTraining completed. Do not forget to share your model on huggingface.co/models =)\n\n")
@@ -826,15 +842,29 @@ class FtTrainer(Trainer):
 
             self.log(logs)
 
+        metrics_df = None
         metrics = None
         if self.control.should_evaluate:
             if isinstance(self.eval_dataset, dict):
+                metrics_dict = {}
                 for eval_dataset_name, eval_dataset in self.eval_dataset.items():
                     metrics = self.evaluate(
                         eval_dataset=eval_dataset,
                         ignore_keys=ignore_keys_for_eval,
                         metric_key_prefix=f"eval_{eval_dataset_name}",
                     )
+                    for k,v in metrics.items():
+                        if k not in metrics_dict:
+                            metrics_dict[k] = []
+                        metrics_dict[k].append(v)
+                
+                metrics_df = pd.DataFrame.from_dict(metrics_dict, orient='index')
+                metrics_df = metrics_df.transpose()
+                # metrics_df['model'] = self.model.model_name_or_path
+                metrics_df['task_name'] = self.data_args.task_name
+                # metrics_df['eval_task_name'] = self.data_args.eval_task_name
+                metrics_df['epoch'] = epoch
+
             else:
                 metrics = self.evaluate(ignore_keys=ignore_keys_for_eval)
 
@@ -843,6 +873,8 @@ class FtTrainer(Trainer):
             self.control = self.callback_handler.on_save(
                 self.args, self.state, self.control)
 
+        return metrics_df
+        
     def evaluate(
         self,
         eval_dataset: Optional[Dataset] = None,
