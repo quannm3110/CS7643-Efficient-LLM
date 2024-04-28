@@ -488,6 +488,98 @@ class FtArguments:
         },
     )
 
+    # context disllation flag
+    context_distillation_flag: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Perform context disllation fine tuning, introduces KL divergence loss"
+                "Based on paper https://arxiv.org/pdf/2112.00861.pdf"
+            )
+        },
+    )
+
+    # flag to same dataset for both X and C instead of eli5 for X
+    use_original_data_as_X_flag: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "True, X and C from same train dataset"
+                "False, X from eli5, C from train dataset"
+            )
+        },
+    )
+
+    #### for creating context for context distllation: start ###
+    num_shots: int = field(
+        default=0,
+        metadata={
+            "help": (
+                "Total number of demonstrations in the context."
+            )
+        },
+    )
+
+    context_max_seq_length: int = field(
+        default=2048,
+        metadata={
+            "help": (
+                "This is for the p_0 model input sequence, we will declare this value to be higher as it includes context."
+                "The maximum total input sequence length after tokenization. Sequences longer "
+                "than this will be truncated, sequences shorter will be padded."
+            )
+        },
+    )
+
+    context_target_tokens: Optional[str] = field(
+        default=None, metadata={"help": "Comma separated list of target tokens to generate label mapping, e.g. ĠYes,ĠNo"}
+    )
+
+    context_pattern: Optional[str] = field(
+        default="{text1} {text2} ?", metadata={"help": "The input pattern. We will apply this pattern to every sample of the training and validation datasets."}
+    )
+
+    separate_shots_by: Optional[str] = field(
+        default=" ", metadata={"help": "How to separate demonstartions in the prompt. Default is empty space."}
+    )
+
+    task_description: Optional[str] = field(
+        default="", metadata={"help": "A description added to the beginning of the context"}
+    )
+
+    target_prefix: Optional[str] = field(
+        default="", metadata={"help": "A prefix to be added before the target token."}
+    )
+
+    sample_indices_file: Optional[str] = field(
+        default=None, metadata={"help": "Path to a file that contains indices for demonstrations."}
+    )
+
+    balanced: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Whether to choose an equal number of demonstrations from all available classes"
+            )
+        },
+    )
+
+    shuffle: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Whether to shuffle the demonstrations in the context"
+            )
+        },
+    )
+
+    output_file: Optional[str] = field(
+        default=None, metadata={"help": ("Decide output file name.")
+        },
+    )
+
+    #### for creating context for context distllation: start ###
+
     def __post_init__(self):
         # Sanity checks for fine-tuning arguments
         assert not (
@@ -603,5 +695,10 @@ class InContextLearningArguments:
             "help": (
                 "How many data seeds to use."
             )
+        },
+    )
+
+    output_file: Optional[str] = field(
+        default=None, metadata={"help": ("Decide output file name.")
         },
     )
