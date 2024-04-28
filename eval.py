@@ -339,7 +339,7 @@ def main():
     # -------------------------------------------------
 
     # Create in-context learning prompt from training data
-    context, contex_indices = create_few_shot_context(
+    context, context_indices = create_few_shot_context(
         data_args.task_name, raw_datasets["train"], in_context_args.num_shots, pattern=in_context_args.pattern,
         label_to_tokens=id_to_target_token,
         separate_shots_by=in_context_args.separate_shots_by, description=in_context_args.task_description,
@@ -610,18 +610,51 @@ def main():
             #                 writer.write(f"{index}\t{item}\n")
 
             # Save everything to in a dataframe
+            output_file_name = in_context_args.output_file
             all_results = _add_args_to_results(in_context_args, all_results)
-            all_results["indices"] = contex_indices
+            all_results["indices"] = context_indices
             all_results["context"] = context
+            all_results["seed"] = training_args.seed
             all_results["data_seed"] = training_args.data_seed
             all_results["keep_samples_in-domain"] = keep_counter["in-domain"]
             for name in additional_evaluation_datasets.keys():
                 all_results[f"keep_samples_{name}"] = keep_counter[name]
 
-            # Add columns to record experiment settings for each row
-            df['model'] = MODEL_NAME
-            df['task_name]' = data_args.task_name
+            df = _create_df(all_results)
+            df['model'] = model_args.model_name_or_path
+            df['task_name'] = data_args.task_name
             df['eval_task_name'] = data_args.eval_task_name
+            df = df[['model', 'task_name', 'eval_task_name','group',
+                    'num_shots', 'seed', 'data_seed', 'hans-lexical_overlap-contradiction_loss',
+                    'hans-lexical_overlap-contradiction_accuracy',
+                    'hans-lexical_overlap-contradiction_score_accuracy',
+                    'hans-lexical_overlap-contradiction_runtime',
+                    'hans-lexical_overlap-contradiction_samples_per_second',
+                    'hans-lexical_overlap-contradiction_steps_per_second',
+                    'hans-lexical_overlap-entailment_loss',
+                    'hans-lexical_overlap-entailment_accuracy',
+                    'hans-lexical_overlap-entailment_score_accuracy',
+                    'hans-lexical_overlap-entailment_runtime',
+                    'hans-lexical_overlap-entailment_samples_per_second',
+                    'hans-lexical_overlap-entailment_steps_per_second',
+                    'mnli_loss',
+                    'mnli_accuracy',
+                    'mnli_score_accuracy',
+                    'mnli_runtime',
+                    'mnli_samples_per_second',
+                    'mnli_steps_per_second',
+                    'task_description',
+                    'pattern',
+                    'target_tokens',
+                    'separate_shots_by',
+                    'balanced',
+                    'shuffle',
+                    'target_prefix',
+                    'indices',
+                    'context',
+                    'keep_samples_in-domain',
+                    'keep_samples_hans-lexical_overlap-entailment',
+                    'keep_samples_hans-lexical_overlap-contradiction']]
 
             if "llama" in model_args.model_name_or_path:
                 name = model_args.model_name_or_path.split("/")
@@ -630,17 +663,16 @@ def main():
                 # file_name = f"{MODEL_NAME}" + \
                 #     f"_{data_args.task_name}" + \
                 #     f"_{data_args.eval_task_name}"
-
-                # New file for gathering ICL results - Save all ICL results to "ICL_outputs.csv"
-                file_name = "ICL_outputs"
+                pass
 
             else:
-                file_name = f"{model_args.model_name_or_path.replace('/', '-')}" + \
-                    f"_{data_args.task_name}" + \
-                    f"_{data_args.eval_task_name}"
+                # file_name = f"{model_args.model_name_or_path.replace('/', '-')}" + \
+                #     f"_{data_args.task_name}" + \
+                #     f"_{data_args.eval_task_name}"
+                pass
 
             output_file = os.path.join(
-                training_args.output_dir, f"{file_name}.csv")
+                training_args.output_dir, f"{output_file_name}.csv")
             if os.path.exists(output_file):
                 # if the file already exists, we append to it
                 df.to_csv(output_file, mode='a', header=False)
